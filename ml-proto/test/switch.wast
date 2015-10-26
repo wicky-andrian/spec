@@ -8,7 +8,7 @@
     (label
       (tableswitch (get_local $i)
         (table (case $0) (case $1) (case $2) (case $3) (case $4)
-               (case $5) (case $6) (case $7)) (case $default)
+               (case $5) (case $6) (case $7) (case $default))
         (case $0 (return (get_local $i)))
         (case $1 (nop))  ;; fallthrough
         (case $2)  ;; fallthrough
@@ -31,7 +31,7 @@
       (label $l
         (tableswitch (i32.wrap/i64 (get_local $i))
           (table (case $0) (case $1) (case $2) (case $3) (case $4)
-                 (case $5) (case $6) (case $7)) (case $default)
+                 (case $5) (case $6) (case $7) (case $default))
           (case $0 (return (get_local $i)))
           (case $1 (nop))  ;; fallthrough
           (case $2)  ;; fallthrough
@@ -50,15 +50,15 @@
   (func $corner (result i32)
     (local $x i32)
     (tableswitch (i32.const 0)
-      (table) (case $default)
+      (table (case $default))
       (case $default)
     )
     (tableswitch (i32.const 0)
-      (table) (case $default)
+      (table (case $default))
       (case $default (set_local $x (i32.add (get_local $x) (i32.const 1))))
     )
     (tableswitch (i32.const 1)
-      (table (case $0)) (case $default)
+      (table (case $0) (case $default))
       (case $default (set_local $x (i32.add (get_local $x) (i32.const 2))))
       (case $0 (set_local $x (i32.add (get_local $x) (i32.const 4))))
     )
@@ -69,14 +69,14 @@
   (func $break (result i32)
     (local $x i32)
     (tableswitch $l (i32.const 0)
-      (table) (br $l)
+      (table (br $l))
     )
     (tableswitch $l (i32.const 0)
-      (table (br $l)) (case $default)
+      (table (br $l) (case $default))
       (case $default (set_local $x (i32.add (get_local $x) (i32.const 1))))
     )
     (tableswitch $l (i32.const 1)
-      (table (case $0)) (br $l)
+      (table (case $0) (br $l))
       (case $0 (set_local $x (i32.add (get_local $x) (i32.const 2))))
     )
     (get_local $x)
@@ -109,5 +109,5 @@
 (assert_return (invoke "corner") (i32.const 7))
 (assert_return (invoke "break") (i32.const 0))
 
-(assert_invalid (module (func (tableswitch (i32.const 0) (table) (case 0)))) "invalid target")
-(assert_invalid (module (func (tableswitch (i32.const 0) (table) (case 1) (case)))) "invalid target")
+(assert_invalid (module (func (tableswitch (i32.const 0) (table (case 0))))) "invalid target")
+(assert_invalid (module (func (tableswitch (i32.const 0) (table (case 1)) (case)))) "invalid target")

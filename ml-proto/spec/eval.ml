@@ -161,14 +161,13 @@ let rec eval_expr (c : config) (e : expr) =
   | Break (x, eo) ->
     raise (label c x (eval_expr_opt c eo))
 
-  | Switch (e1, xs, x, es) ->
+  | Switch (e1, xs, es) ->
     let i = int32 (eval_expr c e1) e1.at in
-    let x' =
-      if I32.ge_u i (Int32.of_int (List.length xs)) then x
-      else List.nth xs (Int32.to_int i)
-    in
-    if x'.it >= List.length es then Crash.error e.at "invalid switch target";
-    List.fold_left (fun vo e -> eval_expr c e) None (Lib.List.drop x'.it es)
+    let i' = I32.min_u i (Int32.of_int (List.length xs - 1)) in
+    (* Note: a list's length cannot practically overflow the int range. *)
+    let x = List.nth xs (Int32.to_int i') in
+    if x.it >= List.length es then Crash.error e.at "invalid switch target";
+    List.fold_left (fun vo e -> eval_expr c e) None (Lib.List.drop x.it es)
 
   | Call (x, es) ->
     let vs = List.map (fun vo -> some (eval_expr c vo) vo.at) es in

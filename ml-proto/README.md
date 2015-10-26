@@ -127,8 +127,8 @@ expr:
   ( label <var>? <expr> )
   ( br <var> <expr>? )
   ( return <expr>? )                             ;; = (br <current_depth> <expr>?)
-  ( tableswitch <expr> <switch> <target> <case>* )
-  ( tableswitch <var> <expr> <switch> <target> <case>* )  ;; = (label <var> (tableswitch <expr> <switch> <target> <case>*))
+  ( tableswitch <expr> <switch> <case>* )
+  ( tableswitch <var> <expr> <switch> <case>* )  ;; = (label <var> (tableswitch <expr> <switch> <case>*))
   ( call <var> <expr>* )
   ( call_import <var> <expr>* )
   ( call_indirect <var> <expr> <expr>* )
@@ -146,7 +146,7 @@ expr:
   ( grow_memory <expr> )
 
 switch:
-  ( table <target>* )
+  ( table <target>+ )
 
 target:
   ( case <var> )

@@ -49,18 +49,17 @@ let br (x, e) =
 let return (x, eo) =
   Break (x, eo)
 
-let tableswitch (l, e, cs, c, es) =
+let tableswitch (l, e, cs, es) =
   let case c (xs, es') =
     match c.it with
     | Case x -> x :: xs, es'
     | Case_br x ->
       (List.length es' @@ c.at) :: xs, (Break (x, None) @@ c.at) :: es'
   in
-  let xs, es' = List.fold_right case (c :: cs) ([], []) in
-  let es'' = List.map expr_seq es in
+  let xs, es' = List.fold_right case cs ([], []) in
   let n = List.length es' in
   let sh x = (if x.it >= n then x.it + n else x.it) @@ x.at in
-  labeling l (Switch (e, List.map sh (List.tl xs), sh (List.hd xs), es' @ es''))
+  labeling l (Switch (e, List.map sh xs, es' @ List.map expr_seq es))
 
 let call (x, es) =
   Call (x, es)

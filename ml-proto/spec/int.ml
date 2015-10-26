@@ -64,6 +64,10 @@ sig
   val ge_s : t -> t -> bool
   val ge_u : t -> t -> bool
 
+  val min_s : t -> t -> t
+  val min_u : t -> t -> t
+  val max_s : t -> t -> t
+  val max_u : t -> t -> t
   val compare_s : t -> t -> int
   val compare_u : t -> t -> int
 
@@ -192,6 +196,11 @@ struct
   let gt_u x y = cmp_u x (>) y
   let ge_s x y = x >= y
   let ge_u x y = cmp_u x (>=) y
+
+  let min_s x y = if le_s x y then x else y
+  let min_u x y = if le_u x y then x else y
+  let max_s x y = if ge_s x y then x else y
+  let max_u x y = if ge_u x y then x else y
 
   let of_string = Rep.of_string
   let to_string = Rep.to_string

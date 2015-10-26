@@ -273,10 +273,10 @@ expr1 :
   | RETURN expr_opt
     { let at1 = ati 1 in
       fun c -> return (label c ("return" @@ at1) @@ at1, $2 c) }
-  | TABLESWITCH labeling expr LPAR TABLE case_list RPAR case target_list
+  | TABLESWITCH labeling expr LPAR TABLE case_list RPAR target_list
     { fun c -> let c', l = $2 c in let e = $3 c' in
-      let c'' = enter_switch c' in let es = $9 c'' in
-      tableswitch (l, e, $6 c'', $8 c'', es) }
+      let c'' = enter_switch c' in let es = $8 c'' in
+      tableswitch (l, e, $6 c'', es) }
   | CALL var expr_list { fun c -> call ($2 c func, $3 c) }
   | CALL_IMPORT var expr_list { fun c -> call_import ($2 c import, $3 c) }
   | CALL_INDIRECT var expr expr_list
@@ -316,7 +316,7 @@ case :
   | LPAR BR var RPAR { let at = at () in fun c -> Case_br ($3 c label) @@ at }
 ;
 case_list :
-  | /* empty */ { fun c -> [] }
+  | case { fun c -> [$1 c] }
   | case case_list { fun c -> $1 c :: $2 c }
 ;
 target :

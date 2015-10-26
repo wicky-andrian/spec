@@ -149,9 +149,10 @@ let rec check_expr c et e =
   | Break (x, eo) ->
     check_expr_opt c (label c x) eo e.at
 
-  | Switch (e1, xs, x, es) ->
-    List.iter (fun x -> require (x.it < List.length es) x.at "invalid target")
-      (x :: xs);
+  | Switch (e1, xs, es) ->
+    require (xs <> []) e.at "invalid switch table";
+    List.iter
+      (fun x -> require (x.it < List.length es) x.at "invalid target") xs;
     check_expr c (Some Int32Type) e1;
     ignore (List.fold_right (fun e et -> check_expr c et e; None) es et)
 

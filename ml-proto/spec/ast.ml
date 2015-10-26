@@ -61,9 +61,9 @@ module Float64Op = FloatOp ()
 
 type unop = (Int32Op.unop, Int64Op.unop, Float32Op.unop, Float64Op.unop) op
 type binop = (Int32Op.binop, Int64Op.binop, Float32Op.binop, Float64Op.binop) op
+type selop = (Int32Op.selop, Int64Op.selop, Float32Op.selop, Float64Op.selop) op
 type relop = (Int32Op.relop, Int64Op.relop, Float32Op.relop, Float64Op.relop) op
 type cvt = (Int32Op.cvt, Int64Op.cvt, Float32Op.cvt, Float64Op.cvt) op
-type selop = (Int32Op.selop, Int64Op.selop, Float32Op.selop, Float64Op.selop) op
 
 type memop = {ty : value_type; offset : Memory.offset; align : int option}
 type extop = {memop : memop; sz : Memory.mem_size; ext : Memory.extension}
@@ -88,7 +88,7 @@ and expr' =
   | Loop of expr                            (* infinite loop *)
   | Label of expr                           (* labelled expression *)
   | Break of var * expr option              (* break to n-th surrounding label *)
-  | Switch of expr * var list * var * expr list   (* table switch *)
+  | Switch of expr * var list * expr list   (* table switch *)
   | Call of var * expr list                 (* call function *)
   | CallImport of var * expr list           (* call imported function *)
   | CallIndirect of var * expr * expr list  (* call function through table *)
