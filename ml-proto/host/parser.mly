@@ -49,11 +49,6 @@ let literal s t =
     | Failure msg -> error s.at ("constant out of range: " ^ msg)
     | _ -> error s.at "constant out of range"
 
-let int32 s =
-  try I32.of_string s.it with
-    | Failure msg -> error s.at ("constant out of range: " ^ msg)
-    | _ -> error s.at "constant out of range"
-
 
 (* Memory operands *)
 
@@ -170,7 +165,7 @@ let implicit_decl c t at =
 %token CONST UNARY BINARY COMPARE CONVERT
 %token FUNC TYPE PARAM RESULT LOCAL
 %token MODULE MEMORY SEGMENT IMPORT EXPORT TABLE
-%token PAGE_SIZE MEMORY_SIZE GROW_MEMORY HAS_FEATURE
+%token UNREACHABLE MEMORY_SIZE GROW_MEMORY HAS_FEATURE
 %token ASSERT_INVALID ASSERT_RETURN ASSERT_RETURN_NAN ASSERT_TRAP INVOKE
 %token EOF
 
@@ -273,7 +268,7 @@ expr1 :
   | RETURN expr_opt
     { let at1 = ati 1 in
       fun c -> return (label c ("return" @@ at1) @@ at1, $2 c) }
-  | TABLESWITCH labeling expr LPAR TABLE case_list RPAR target_list
+  | TABLESWITCH labeling expr LPAR TABLE target_list RPAR case_list
     { fun c -> let c', l = $2 c in let e = $3 c' in
       let c'' = enter_switch c' in let es = $8 c'' in
       tableswitch (l, e, $6 c'', es) }
@@ -297,7 +292,7 @@ expr1 :
   | SELECT expr expr expr { fun c -> select ($1, $2 c, $3 c, $4 c) }
   | COMPARE expr expr { fun c -> compare ($1, $2 c, $3 c) }
   | CONVERT expr { fun c -> convert ($1, $2 c) }
-  | PAGE_SIZE { fun c -> host (PageSize, []) }
+  | UNREACHABLE { fun c -> unreachable }
   | MEMORY_SIZE { fun c -> host (MemorySize, []) }
   | GROW_MEMORY expr { fun c -> host (GrowMemory, [$2 c]) }
   | HAS_FEATURE TEXT { fun c -> host (HasFeature $2, []) }
@@ -311,21 +306,21 @@ expr_list :
   | expr expr_list { fun c -> $1 c :: $2 c }
 ;
 
-case :
+target :
   | LPAR CASE var RPAR { let at = at () in fun c -> Case ($3 c case) @@ at }
   | LPAR BR var RPAR { let at = at () in fun c -> Case_br ($3 c label) @@ at }
 ;
-case_list :
-  | case { fun c -> [$1 c] }
-  | case case_list { fun c -> $1 c :: $2 c }
+target_list :
+  | target { fun t -> [$1 t] }
+  | target target_list { fun t -> $1 t :: $2 t }
 ;
-target :
+case :
   | LPAR CASE expr_list RPAR { fun c -> anon_case c; $3 c }
   | LPAR CASE bind_var expr_list RPAR { fun c -> bind_case c $3; $4 c }
 ;
-target_list :
+case_list :
   | /* empty */ { fun c -> [] }
-  | target target_list { fun c -> let e = $1 c in let es = $2 c in e :: es }
+  | case case_list { fun c -> let e = $1 c in let es = $2 c in e :: es }
 ;
 
 

@@ -68,8 +68,6 @@ sig
   val min_u : t -> t -> t
   val max_s : t -> t -> t
   val max_u : t -> t -> t
-  val compare_s : t -> t -> int
-  val compare_u : t -> t -> int
 
   val of_int : int -> t
   val of_string : string -> t
@@ -136,23 +134,18 @@ struct
   let or_ = Rep.logor
   let xor = Rep.logxor
 
-  (* WebAssembly shift counts are unmasked and unsigned *)
-  let shift_ok n = n >= Rep.zero && n < Rep.of_int Rep.bitwidth
+  (* WebAssembly's shifts mask the shift count to according to the bitwidth. *)
+  let shift f x y =
+    f x (Rep.to_int (Rep.logand y (Rep.of_int (Rep.bitwidth - 1))))
 
   let shl x y =
-    if shift_ok y then
-      Rep.shift_left x (Rep.to_int y)
-    else
-      Rep.zero
+    shift Rep.shift_left x y
 
   let shr_s x y =
-    Rep.shift_right x (if shift_ok y then Rep.to_int y else Rep.bitwidth - 1)
+    shift Rep.shift_right x y
 
   let shr_u x y =
-    if shift_ok y then
-      Rep.shift_right_logical x (Rep.to_int y)
-    else
-      Rep.zero
+    shift Rep.shift_right_logical x y
 
   let clz x =
     Rep.of_int
@@ -206,7 +199,4 @@ struct
   let to_string = Rep.to_string
 
   let of_int = Rep.of_int
-
-  let compare_s = compare
-  let compare_u x y = compare (Rep.add x Rep.min_int) (Rep.add y Rep.min_int)
 end

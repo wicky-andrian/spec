@@ -39,12 +39,6 @@ let import c x = lookup "import" c.imports x
 let local c x = lookup "local" c.locals x
 let label c x = lookup "label" c.labels x
 
-module CaseSet = Set.Make(
-  struct
-    type t = I32.t option
-    let compare = Lib.Option.compare I32.compare_u
-  end)
-
 
 (* Type comparison *)
 
@@ -102,7 +96,6 @@ let type_cvt at = function
  * present in the module.
  *)
 let type_hostop = function
-  | PageSize -> ({ins = []; out = Some Int32Type}, true)
   | MemorySize -> ({ins = []; out = Some Int32Type}, true)
   | GrowMemory -> ({ins = [Int32Type]; out = None}, true)
   | HasFeature str -> ({ins = []; out = Some Int32Type}, false)
@@ -225,6 +218,9 @@ let rec check_expr c et e =
     check_expr c (Some t1) e1;
     check_type (Some t) et e.at
 
+  | Unreachable ->
+    ()
+
   | Host (hostop, es) ->
     let ({ins; out}, hasmem) = type_hostop hostop in
     if hasmem then
@@ -263,6 +259,7 @@ and check_has_memory c at =
 
 and check_memop memop at =
   require (memop.offset >= 0L) at "negative offset";
+  require (memop.offset <= 0xffffffffL) at "offset too large";
   Lib.Option.app
     (fun a -> require (Lib.Int.is_power_of_two a) at "non-power-of-two alignment")
     memop.align
