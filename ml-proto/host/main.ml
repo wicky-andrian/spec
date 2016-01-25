@@ -4,30 +4,21 @@ let version = "0.2"
 let banner () =
   print_endline (name ^ " " ^ version ^ " spec interpreter")
 
-let parse name lexbuf start =
-  lexbuf.Lexing.lex_curr_p <-
-    {lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = name};
-  try start Lexer.token lexbuf with Script.Syntax (region, s) ->
-    let region' = if region <> Source.no_region then region else
-      {Source.left = Lexer.convert_pos lexbuf.Lexing.lex_start_p;
-       Source.right = Lexer.convert_pos lexbuf.Lexing.lex_curr_p} in
-    raise (Script.Syntax (region', s))
-
 let error at category msg =
   Script.trace ("Error (" ^ category ^ "): ");
   prerr_endline (Source.string_of_region at ^ ": " ^ msg);
   false
 
-let process file lexbuf start =
+let process name lexbuf start =
   try
-    let script = parse file lexbuf start in
+    let script = Sexpr.parse name lexbuf start in
     Script.trace "Desugaring...";
     let script' = Script.desugar script in
     Script.trace "Running...";
     Script.run script';
     true
   with
-  | Script.Syntax (at, msg) -> error at "syntax error" msg
+  | Sexpr.Syntax (at, msg) -> error at "syntax error" msg
   | Script.AssertFailure (at, msg) -> error at "assertion failure" msg
   | Check.Invalid (at, msg) -> error at "invalid module" msg
   | Eval.Trap (at, msg) -> error at "runtime trap" msg
@@ -40,7 +31,7 @@ let process_file file =
   try
     let lexbuf = Lexing.from_channel ic in
     Script.trace "Parsing...";
-    let success = process file lexbuf Parser.script in
+    let success = process file lexbuf Sexpr.Script in
     close_in ic;
     if not success then exit 1
   with exn -> close_in ic; raise exn
@@ -65,7 +56,7 @@ let rec process_stdin () =
   banner ();
   let lexbuf = Lexing.from_function lexbuf_stdin in
   let rec loop () =
-    let success = process "stdin" lexbuf Parser.script1 in
+    let success = process "stdin" lexbuf Sexpr.Script1 in
     if not success then Lexing.flush_input lexbuf;
     if Lexing.(lexbuf.lex_curr_pos >= lexbuf.lex_buffer_len - 1) then
       continuing := false;

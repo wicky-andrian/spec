@@ -70,7 +70,7 @@ and expr' at = function
         (List.length es' @@ t.at) :: xs, (Break (x, None) @@ t.at) :: es'
     in
     let xs, es' = List.fold_right target (t :: ts) ([], []) in
-    let es'' = List.map seq es in
+    let es'' = List.map expr es in
     let n = List.length es' in
     let sh x = (if x.it >= n then x.it + n else x.it) @@ x.at in
     Block [Switch

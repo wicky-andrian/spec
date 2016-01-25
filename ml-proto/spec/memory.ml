@@ -7,7 +7,7 @@ type size = address
 type offset = address
 type mem_size = Mem8 | Mem16 | Mem32
 type extension = SX | ZX
-type segment = {addr : address; data : string}
+type segment = {addr : address; data : bytes}
 type value_type = Types.value_type
 type value = Values.value
 

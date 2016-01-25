@@ -23,7 +23,7 @@ and expr' =
   | Return of var * expr option
   | If of expr * expr
   | If_else of expr * expr * expr
-  | Tableswitch of expr * target list * target * expr list list
+  | Tableswitch of expr * target list * target * expr list
   | Call of var * expr list
   | Call_import of var * expr list
   | Call_indirect of var * expr * expr list

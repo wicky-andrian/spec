@@ -160,9 +160,10 @@ let implicit_decl c t at =
 %nonassoc LOW
 %nonassoc VAR
 
-%start script script1
+%start script script1 module1
 %type<Script.script> script
 %type<Script.script> script1
+%type<Ast.module_> module1
 
 %%
 
@@ -279,8 +280,8 @@ target_list :
   | target target_list { fun c -> $1 c :: $2 c }
 ;
 case :
-  | LPAR CASE expr_list RPAR { fun c -> anon_case c; $3 c }
-  | LPAR CASE bind_var expr_list RPAR { fun c -> bind_case c $3; $4 c }
+  | LPAR CASE expr RPAR { fun c -> anon_case c; $3 c }
+  | LPAR CASE bind_var expr RPAR { fun c -> bind_case c $3; $4 c }
 ;
 case_list :
   | /* empty */ { fun c -> [] }
@@ -457,5 +458,8 @@ script :
 ;
 script1 :
   | cmd { [$1] }
+;
+module1 :
+  | module_ EOF { $1 }
 ;
 %%
