@@ -160,9 +160,10 @@ let implicit_decl c t at =
 %nonassoc LOW
 %nonassoc VAR
 
-%start script script1
+%start script script1 module1
 %type<Script.script> script
 %type<Script.script> script1
+%type<Ast.module_> module1
 
 %%
 
@@ -457,5 +458,8 @@ script :
 ;
 script1 :
   | cmd { [$1] }
+;
+module1 :
+  | module_ EOF { $1 }
 ;
 %%
