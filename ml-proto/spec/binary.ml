@@ -7,10 +7,16 @@ let require b pos msg = if not b then error pos msg
 
 (* Decoding stream *)
 
-type stream = {bytes : bytes; mutable pos : int}
+type stream =
+{
+  bytes : bytes;
+  mutable pos : int;
+  limit : int;
+}
 
-let stream b = {bytes = b; pos = 0}
-let len s = Bytes.length s.bytes
+let stream b = {bytes = b; pos = 0; len = Bytes.length b}
+let substream s len = {s with len = s.pos + len}
+let len s = s.len
 let pos s = s.pos
 let eos s = (pos s = len s)
 
@@ -29,6 +35,7 @@ let string s pos =
 let check s = require not (eos s) (len s) "unexpected end of binary"
 let peek s = check s; Bytes.get s.bytes s.pos
 let adv s = check s; s.pos <- s.pos + 1
+let rew s = s.pos <- s.pos - 1
 let get s = check s; let i = s.pos in s.pos <- i + 1; Bytes.get s.bytes i
 
 let repeat n f s = if n = 0 then [] else let x = f s in x :: repeat (n - 1) f s
@@ -48,7 +55,11 @@ let decode_section_header s =
   | _ -> error (pos s - 1) "invalid section code"
 
 
-(* Decode immediates *)
+(* Decode immediates and markers *)
+
+let expect b s msg = require (get s = b) (pos s - 1) msg
+let illegal s =
+  rew s; error (pos s) ("Illegal opcode " ^ string_of_int (Char.chr (peek s)))
 
 let u8 s = Char.code (get s)
 let bool8 s = u8 s <> 0
@@ -65,8 +76,8 @@ let u32 s =
 
 let leb128 s =
   let b = u8 s in
-  let x = Int64.of_int (b & 0x7f) in
-  if b & 0x80 = 0 then x else Int64.(logor x (shift_left (leb128 s) 7))
+  let x = Int32.of_int (b & 0x7f) in
+  if b & 0x80 = 0 then x else Int32.(logor x (shift_left (leb128 s) 7))
   (*TODO: check for overflow*)
 
 let bit i n = n & (1 lsl i) <> 0
@@ -103,42 +114,52 @@ let decode_memop s =
   let align = bit 7 flags in  (*TODO*)
   offset, align
 
-let rec decode_expr s =
+let opt e = if e.it = Nop then None else Some e
+
+let rec decode_expr_block s =
+  List.rev (decode_exprs s [])
+
+and decode_exprs s stack =
+  let i = pos s in
+  let stack' = decode_expr s stack in
+  if pos s = i then stack' else decode_exprs s stack'
+
+and decode_expr s stack =
   let open Ast in
-  match get s with
-  | '\x00' -> Nop
-  | '\x01' ->
-    let len = u8 s in
-    let es = repeat len decode_expr s in
-    Block es
-  | '\x02' ->
-    let len = u8 s in
-    let es = repeat len decode_expr s in
-    Loop es
-  | '\x03' ->
-    let e1 = decode_expr s in
-    let e2 = decode_expr s in
-    If (e1, e2)
-  | '\x04' ->
-    let e1 = decode_expr s in
-    let e2 = decode_expr s in
-    let e3 = decode_expr s in
-    If_else (e1, e2, e3)
-  | '\x05' ->
-    let e1 = decode_expr s in
-    let e2 = decode_expr s in
-    let e3 = decode_expr s in
-    Select (e1, e2, e3)
-  | '\x06' ->
+  if eos s then stack else
+  match get s, stack with
+  | '\x00', es ->
+    Nop :: es
+  | '\x01', es ->
+    let es' = decode_expr_block s in
+    expect '\x17' "end opcode expected";
+    Block es' :: es
+  | '\x02', es ->
+    let es' = decode_expr_block s in
+    expect '\x17' "end opcode expected";
+    Loop es' :: es
+  | '\x03', e :: es ->
+    let es1 = decode_expr_block s in
+    if peek s = '\x04' then begin
+      expect '\x04' "else or end opcode expected";
+      let es2 = decode_expr_block s in
+      expect '\x17' "end opcode expected";
+      If_else (e, es1, es2) (*TODO: separate opcode?*)
+    end else begin
+      expect '\x17' "end opcode expected";
+      If (e, es1)
+    end
+  | '\x04', es ->
+    rew s; es (* next *)
+  | '\x05', e3 :: e2 :: e1 :: es ->
+    Select (e1, e2, e3) :: es
+  | '\x06', e :: es ->
     let x = u8 s in
-    let eo = decode_expr_opt s in
-    Br (x, eo)
-  | '\x07' ->
+    Br (x, opt e) :: es
+  | '\x07', e2 :: e1 :: es ->
     let x = u8 s in
-    let eo = decode_expr_opt s in
-    let e = decode_expr s in
-    Br_if (x, eo, e)
-  | '\x08' ->
+    Br_if (x, opt e1, e2)
+  | '\x08', e :: es ->
     let len_cases = u16 s in
     let len_targets = u16 s in  (*TODO: minus 1?*)
     require (len_targets = 0) (pos s - 2) "empty switch table";
@@ -148,204 +169,204 @@ let rec decode_expr s =
     let es = repeat len_cases decode_expr s in
     Tableswitch (e, ts, t, List.map (fun e -> [e]) es) (*TODO: fix AST*)
 
-  | '\x09' -> I32_const (Int32.of_int (u8 s) & 0xffl) (*TODO: needed?*)
-  | '\x0a' -> I32_const (u32 s)
-  | '\x0b' -> I64_const (u64 s)
-  | '\x0c' -> F32_const (f32 s)
-  | '\x0d' -> F64_const (f64 s)
+  | '\x09', es -> I32_const (Int32.of_int (u8 s) & 0xffl) :: es (*TODO: opcode?*)
+  | '\x0a', es -> I32_const (u32 s) :: es
+  | '\x0b', es -> I64_const (u64 s) :: es
+  | '\x0c', es -> F32_const (f32 s) :: es
+  | '\x0d', es -> F64_const (f64 s) :: es
 
-  | '\x0e' -> let x = leb128 s in Get_local (x)
-  | '\x0f' -> let x = leb128 s in Set_local (x, decode_expr s)
-  | '\x10' -> error (pos s - 1) "illegal load_global opcode"
-  | '\x11' -> error (pos s - 1) "illegal store_global opcode"
+  | '\x0e', es ->
+    let x = leb128 s in
+    Get_local x :: es
+  | '\x0f', e :: es ->
+    let x = leb128 s in
+    Set_local (x, e) :: es
+  | '\x10', _ -> illegal s (* get_global *)
+  | '\x11', _ -> illegal s (* set_global *)
 
-  | '\x12' ->
+  | '\x12', es ->
     let x = leb128 s in
     let arity = (*TODO: from func table*) in
-    let es = repeat arity decode_expr s in
-    Call (x, es)
-  | '\x13' ->
+    let es' = pop s arity in
+    Call (x, es') :: s.stack
+  | '\x13', e es ->
     let x = leb128 s in
     let arity = (*TODO: from type table*) in
     let e = decode_expr s in
-    let es = repeat arity decode_expr s in
-    Call_indirect (x, e, es)
+    let es' = pop s arity in
+    Call_indirect (x, e, es')
   (*TODO: Call_import?*)
 
-  | '\x14' ->
+  | '\x14', es ->
     let arity = (*TODO: from func table*) in
-    let eo = if arity = 0 then None else Some (decode_expr s) in
-    Return eo
-  | '\x15' ->
-    Unreachable
+    let eo = if arity = 0 then None else Some (pop s 1) in
+    Return eo :: s.stack
+  | '\x15', es ->
+    Unreachable :: es
 
-  (* '\x16'-'\x1f' are unused *)
+  | '\x16', es ->
+    rew s; es (* next *)
+  | '\x17', es ->
+    rew s; es (* end *)
 
-  | '\x20' -> I32_load8_s (0, None, decode_expr s)
-  | '\x21' -> I32_load8_u (0, None, decode_expr s)
-  | '\x22' -> I32_load16_s (0, None, decode_expr s)
-  | '\x23' -> I32_load16_u (0, None, decode_expr s)
-  | '\x24' -> I64_load8_s (0, None, decode_expr s)
-  | '\x25' -> I64_load8_u (0, None, decode_expr s)
-  | '\x26' -> I64_load16_s (0, None, decode_expr s)
-  | '\x27' -> I64_load16_u (0, None, decode_expr s)
-  | '\x28' -> I64_load32_s (0, None, decode_expr s)
-  | '\x29' -> I64_load32_u (0, None, decode_expr s)
-  | '\x2a' -> I32_load (0, None, decode_expr s)
-  | '\x2b' -> I64_load (0, None, decode_expr s)
-  | '\x2c' -> F32_load (0, None, decode_expr s)
-  | '\x2d' -> F64_load (0, None, decode_expr s)
+  | '\x18'..'\x1f' -> illegal s
 
-  | '\x2e' -> let e1, e2 = decode_expr2 s in I32_store8 (0, None, e1, e2)
-  | '\x2f' -> let e1, e2 = decode_expr2 s in I32_store16 (0, None, e1, e2)
-  | '\x30' -> let e1, e2 = decode_expr2 s in I64_store8 (0, None, e1, e2)
-  | '\x31' -> let e1, e2 = decode_expr2 s in I64_store16 (0, None, e1, e2)
-  | '\x32' -> let e1, e2 = decode_expr2 s in I64_store32 (0, None, e1, e2)
-  | '\x33' -> let e1, e2 = decode_expr2 s in I32_store (0, None, e1, e2)
-  | '\x34' -> let e1, e2 = decode_expr2 s in I64_store (0, None, e1, e2)
-  | '\x35' -> let e1, e2 = decode_expr2 s in F32_store (0, None, e1, e2)
-  | '\x36' -> let e1, e2 = decode_expr2 s in F64_store (0, None, e1, e2)
+  | '\x20', e :: es -> I32_load8_s (0, None, e) :: es
+  | '\x21', e :: es -> I32_load8_u (0, None, e) :: es
+  | '\x22', e :: es -> I32_load16_s (0, None, e) :: es
+  | '\x23', e :: es -> I32_load16_u (0, None, e) :: es
+  | '\x24', e :: es -> I64_load8_s (0, None, e) :: es
+  | '\x25', e :: es -> I64_load8_u (0, None, e) :: es
+  | '\x26', e :: es -> I64_load16_s (0, None, e) :: es
+  | '\x27', e :: es -> I64_load16_u (0, None, e) :: es
+  | '\x28', e :: es -> I64_load32_s (0, None, e) :: es
+  | '\x29', e :: es -> I64_load32_u (0, None, e) :: es
+  | '\x2a', e :: es -> I32_load (0, None, e) :: es
+  | '\x2b', e :: es -> I64_load (0, None, e) :: es
+  | '\x2c', e :: es -> F32_load (0, None, e) :: es
+  | '\x2d', e :: es -> F64_load (0, None, e) :: es
 
-  (* '\x37' is unused *)
-  (* '\x38' is unused *)
-  | '\x39' -> Grow_memory (decode_expr s)
-  (* '\x3a' is unused *)
-  | '\x3b' -> Memory_size
+  | '\x2e', e2 :: e1 :: es -> I32_store8 (0, None, e1, e2) :: es
+  | '\x2f', e2 :: e1 :: es -> I32_store16 (0, None, e1, e2) :: es
+  | '\x30', e2 :: e1 :: es -> I64_store8 (0, None, e1, e2) :: es
+  | '\x31', e2 :: e1 :: es -> I64_store16 (0, None, e1, e2) :: es
+  | '\x32', e2 :: e1 :: es -> I64_store32 (0, None, e1, e2) :: es
+  | '\x33', e2 :: e1 :: es -> I32_store (0, None, e1, e2) :: es
+  | '\x34', e2 :: e1 :: es -> I64_store (0, None, e1, e2) :: es
+  | '\x35', e2 :: e1 :: es -> F32_store (0, None, e1, e2) :: es
+  | '\x36', e2 :: e1 :: es -> F64_store (0, None, e1, e2) :: es
 
-  | '\x40' -> let e1, e2 = decode_expr2 s in I32_add (e1, e2)
-  | '\x41' -> let e1, e2 = decode_expr2 s in I32_sub (e1, e2)
-  | '\x42' -> let e1, e2 = decode_expr2 s in I32_mul (e1, e2)
-  | '\x43' -> let e1, e2 = decode_expr2 s in I32_div_s (e1, e2)
-  | '\x44' -> let e1, e2 = decode_expr2 s in I32_div_u (e1, e2)
-  | '\x45' -> let e1, e2 = decode_expr2 s in I32_rem_s (e1, e2)
-  | '\x46' -> let e1, e2 = decode_expr2 s in I32_rem_u (e1, e2)
-  | '\x47' -> let e1, e2 = decode_expr2 s in I32_and (e1, e2)
-  | '\x48' -> let e1, e2 = decode_expr2 s in I32_or (e1, e2)
-  | '\x49' -> let e1, e2 = decode_expr2 s in I32_xor (e1, e2)
-  | '\x4a' -> let e1, e2 = decode_expr2 s in I32_shl (e1, e2)
-  | '\x4b' -> let e1, e2 = decode_expr2 s in I32_shr_u (e1, e2)
-  | '\x4c' -> let e1, e2 = decode_expr2 s in I32_shr_s (e1, e2)
-  | '\x4d' -> let e1, e2 = decode_expr2 s in I32_eq (e1, e2)
-  | '\x4e' -> let e1, e2 = decode_expr2 s in I32_ne (e1, e2)
-  | '\x4f' -> let e1, e2 = decode_expr2 s in I32_lt_s (e1, e2)
-  | '\x50' -> let e1, e2 = decode_expr2 s in I32_le_s (e1, e2)
-  | '\x51' -> let e1, e2 = decode_expr2 s in I32_lt_u (e1, e2)
-  | '\x52' -> let e1, e2 = decode_expr2 s in I32_le_u (e1, e2)
-  | '\x53' -> let e1, e2 = decode_expr2 s in I32_gt_s (e1, e2)
-  | '\x54' -> let e1, e2 = decode_expr2 s in I32_ge_s (e1, e2)
-  | '\x55' -> let e1, e2 = decode_expr2 s in I32_gt_u (e1, e2)
-  | '\x56' -> let e1, e2 = decode_expr2 s in I32_ge_u (e1, e2)
-  | '\x57' -> let e1, e2 = decode_expr2 s in I32_clz (e1, e2)
-  | '\x58' -> let e1, e2 = decode_expr2 s in I32_ctz (e1, e2)
-  | '\x59' -> let e1, e2 = decode_expr2 s in I32_popcnt (e1, e2)
-  | '\x5a' -> let e1, e2 = decode_expr2 s in I32_not (e1, e2) (*TODO*)
+  | '\x37'..'\x38', _ -> illegal s
+  | '\x39', e :: es -> Grow_memory e :: es
+  | '\x3a', _ -> illegal s
+  | '\x3b', es -> Memory_size :: es
 
-  | '\x5b' -> let e1, e2 = decode_expr2 s in I64_add (e1, e2)
-  | '\x5c' -> let e1, e2 = decode_expr2 s in I64_sub (e1, e2)
-  | '\x5d' -> let e1, e2 = decode_expr2 s in I64_mul (e1, e2)
-  | '\x5e' -> let e1, e2 = decode_expr2 s in I64_div_s (e1, e2)
-  | '\x5f' -> let e1, e2 = decode_expr2 s in I64_div_u (e1, e2)
-  | '\x60' -> let e1, e2 = decode_expr2 s in I64_rem_s (e1, e2)
-  | '\x61' -> let e1, e2 = decode_expr2 s in I64_rem_u (e1, e2)
-  | '\x62' -> let e1, e2 = decode_expr2 s in I64_and (e1, e2)
-  | '\x63' -> let e1, e2 = decode_expr2 s in I64_or (e1, e2)
-  | '\x64' -> let e1, e2 = decode_expr2 s in I64_xor (e1, e2)
-  | '\x65' -> let e1, e2 = decode_expr2 s in I64_shl (e1, e2)
-  | '\x66' -> let e1, e2 = decode_expr2 s in I64_shr_u (e1, e2)
-  | '\x67' -> let e1, e2 = decode_expr2 s in I64_shr_s (e1, e2)
-  | '\x68' -> let e1, e2 = decode_expr2 s in I64_eq (e1, e2)
-  | '\x69' -> let e1, e2 = decode_expr2 s in I64_ne (e1, e2)
-  | '\x6a' -> let e1, e2 = decode_expr2 s in I64_lt_s (e1, e2)
-  | '\x6b' -> let e1, e2 = decode_expr2 s in I64_le_s (e1, e2)
-  | '\x6c' -> let e1, e2 = decode_expr2 s in I64_lt_u (e1, e2)
-  | '\x6d' -> let e1, e2 = decode_expr2 s in I64_le_u (e1, e2)
-  | '\x6e' -> let e1, e2 = decode_expr2 s in I64_gt_s (e1, e2)
-  | '\x6f' -> let e1, e2 = decode_expr2 s in I64_ge_s (e1, e2)
-  | '\x70' -> let e1, e2 = decode_expr2 s in I64_gt_u (e1, e2)
-  | '\x71' -> let e1, e2 = decode_expr2 s in I64_ge_u (e1, e2)
-  | '\x72' -> let e1, e2 = decode_expr2 s in I64_clz (e1, e2)
-  | '\x73' -> let e1, e2 = decode_expr2 s in I64_ctyz (e1, e2)
-  | '\x74' -> let e1, e2 = decode_expr2 s in I64_popcnt (e1, e2)
+  | '\x40', e2 :: e1 :: es -> I32_add (e1, e2) :: es
+  | '\x41', e2 :: e1 :: es -> I32_sub (e1, e2) :: es
+  | '\x42', e2 :: e1 :: es -> I32_mul (e1, e2) :: es
+  | '\x43', e2 :: e1 :: es -> I32_div_s (e1, e2) :: es
+  | '\x44', e2 :: e1 :: es -> I32_div_u (e1, e2) :: es
+  | '\x45', e2 :: e1 :: es -> I32_rem_s (e1, e2) :: es
+  | '\x46', e2 :: e1 :: es -> I32_rem_u (e1, e2) :: es
+  | '\x47', e2 :: e1 :: es -> I32_and (e1, e2) :: es
+  | '\x48', e2 :: e1 :: es -> I32_or (e1, e2) :: es
+  | '\x49', e2 :: e1 :: es -> I32_xor (e1, e2) :: es
+  | '\x4a', e2 :: e1 :: es -> I32_shl (e1, e2) :: es
+  | '\x4b', e2 :: e1 :: es -> I32_shr_u (e1, e2) :: es
+  | '\x4c', e2 :: e1 :: es -> I32_shr_s (e1, e2) :: es
+  | '\x4d', e2 :: e1 :: es -> I32_eq (e1, e2) :: es
+  | '\x4e', e2 :: e1 :: es -> I32_ne (e1, e2) :: es
+  | '\x4f', e2 :: e1 :: es -> I32_lt_s (e1, e2) :: es
+  | '\x50', e2 :: e1 :: es -> I32_le_s (e1, e2) :: es
+  | '\x51', e2 :: e1 :: es -> I32_lt_u (e1, e2) :: es
+  | '\x52', e2 :: e1 :: es -> I32_le_u (e1, e2) :: es
+  | '\x53', e2 :: e1 :: es -> I32_gt_s (e1, e2) :: es
+  | '\x54', e2 :: e1 :: es -> I32_ge_s (e1, e2) :: es
+  | '\x55', e2 :: e1 :: es -> I32_gt_u (e1, e2) :: es
+  | '\x56', e2 :: e1 :: es -> I32_ge_u (e1, e2) :: es
+  | '\x57', e :: es -> I32_clz e :: es
+  | '\x58', e :: es -> I32_ctz e :: es
+  | '\x59', e :: es -> I32_popcnt e :: es
+  | '\x5a', e :: es -> I32_not e :: es (*TODO*)
 
-  | '\x75' -> let e1, e2 = decode_expr2 s in F32_add (e1, e2)
-  | '\x76' -> let e1, e2 = decode_expr2 s in F32_sub (e1, e2)
-  | '\x77' -> let e1, e2 = decode_expr2 s in F32_mul (e1, e2)
-  | '\x78' -> let e1, e2 = decode_expr2 s in F32_div (e1, e2)
-  | '\x79' -> let e1, e2 = decode_expr2 s in F32_min (e1, e2)
-  | '\x7a' -> let e1, e2 = decode_expr2 s in F32_max (e1, e2)
-  | '\x7b' -> let e1, e2 = decode_expr2 s in F32_abs (e1, e2)
-  | '\x7c' -> let e1, e2 = decode_expr2 s in F32_neg (e1, e2)
-  | '\x7d' -> let e1, e2 = decode_expr2 s in F32_copysign (e1, e2)
-  | '\x7e' -> let e1, e2 = decode_expr2 s in F32_ceil (e1, e2)
-  | '\x7f' -> let e1, e2 = decode_expr2 s in F32_floor (e1, e2)
-  | '\x80' -> let e1, e2 = decode_expr2 s in F32_trunc (e1, e2)
-  | '\x81' -> let e1, e2 = decode_expr2 s in F32_nearest (e1, e2)
-  | '\x82' -> let e1, e2 = decode_expr2 s in F32_sqrt (e1, e2)
-  | '\x83' -> let e1, e2 = decode_expr2 s in F32_eq (e1, e2)
-  | '\x84' -> let e1, e2 = decode_expr2 s in F32_ne (e1, e2)
-  | '\x85' -> let e1, e2 = decode_expr2 s in F32_lt (e1, e2)
-  | '\x86' -> let e1, e2 = decode_expr2 s in F32_le (e1, e2)
-  | '\x87' -> let e1, e2 = decode_expr2 s in F32_gt (e1, e2)
-  | '\x88' -> let e1, e2 = decode_expr2 s in F32_ge (e1, e2)
+  | '\x5b', e2 :: e1 :: es -> I64_add (e1, e2) :: es
+  | '\x5c', e2 :: e1 :: es -> I64_sub (e1, e2) :: es
+  | '\x5d', e2 :: e1 :: es -> I64_mul (e1, e2) :: es
+  | '\x5e', e2 :: e1 :: es -> I64_div_s (e1, e2) :: es
+  | '\x5f', e2 :: e1 :: es -> I64_div_u (e1, e2) :: es
+  | '\x60', e2 :: e1 :: es -> I64_rem_s (e1, e2) :: es
+  | '\x61', e2 :: e1 :: es -> I64_rem_u (e1, e2) :: es
+  | '\x62', e2 :: e1 :: es -> I64_and (e1, e2) :: es
+  | '\x63', e2 :: e1 :: es -> I64_or (e1, e2) :: es
+  | '\x64', e2 :: e1 :: es -> I64_xor (e1, e2) :: es
+  | '\x65', e2 :: e1 :: es -> I64_shl (e1, e2) :: es
+  | '\x66', e2 :: e1 :: es -> I64_shr_u (e1, e2) :: es
+  | '\x67', e2 :: e1 :: es -> I64_shr_s (e1, e2) :: es
+  | '\x68', e2 :: e1 :: es -> I64_eq (e1, e2) :: es
+  | '\x69', e2 :: e1 :: es -> I64_ne (e1, e2) :: es
+  | '\x6a', e2 :: e1 :: es -> I64_lt_s (e1, e2) :: es
+  | '\x6b', e2 :: e1 :: es -> I64_le_s (e1, e2) :: es
+  | '\x6c', e2 :: e1 :: es -> I64_lt_u (e1, e2) :: es
+  | '\x6d', e2 :: e1 :: es -> I64_le_u (e1, e2) :: es
+  | '\x6e', e2 :: e1 :: es -> I64_gt_s (e1, e2) :: es
+  | '\x6f', e2 :: e1 :: es -> I64_ge_s (e1, e2) :: es
+  | '\x70', e2 :: e1 :: es -> I64_gt_u (e1, e2) :: es
+  | '\x71', e2 :: e1 :: es -> I64_ge_u (e1, e2) :: es
+  | '\x72', e :: es -> I64_clz e :: es
+  | '\x73', e :: es -> I64_ctz e :: es
+  | '\x74', e :: es -> I64_popcnt e :: es
 
-  | '\x89' -> let e1, e2 = decode_expr2 s in F64_add (e1, e2)
-  | '\x8a' -> let e1, e2 = decode_expr2 s in F64_sub (e1, e2)
-  | '\x8b' -> let e1, e2 = decode_expr2 s in F64_mul (e1, e2)
-  | '\x8c' -> let e1, e2 = decode_expr2 s in F64_div (e1, e2)
-  | '\x8d' -> let e1, e2 = decode_expr2 s in F64_min (e1, e2)
-  | '\x8e' -> let e1, e2 = decode_expr2 s in F64_max (e1, e2)
-  | '\x8f' -> let e1, e2 = decode_expr2 s in F64_abs (e1, e2)
-  | '\x90' -> let e1, e2 = decode_expr2 s in F64_neg (e1, e2)
-  | '\x91' -> let e1, e2 = decode_expr2 s in F64_copysign (e1, e2)
-  | '\x92' -> let e1, e2 = decode_expr2 s in F64_ceil (e1, e2)
-  | '\x93' -> let e1, e2 = decode_expr2 s in F64_floor (e1, e2)
-  | '\x94' -> let e1, e2 = decode_expr2 s in F64_trunc (e1, e2)
-  | '\x95' -> let e1, e2 = decode_expr2 s in F64_nearest (e1, e2)
-  | '\x96' -> let e1, e2 = decode_expr2 s in F64_sqrt (e1, e2)
-  | '\x97' -> let e1, e2 = decode_expr2 s in F64_eq (e1, e2)
-  | '\x98' -> let e1, e2 = decode_expr2 s in F64_ne (e1, e2)
-  | '\x99' -> let e1, e2 = decode_expr2 s in F64_lt (e1, e2)
-  | '\x9a' -> let e1, e2 = decode_expr2 s in F64_le (e1, e2)
-  | '\x9b' -> let e1, e2 = decode_expr2 s in F64_gt (e1, e2)
-  | '\x9c' -> let e1, e2 = decode_expr2 s in F64_ge (e1, e2)
+  | '\x75', e2 :: e1 :: es -> F32_add (e1, e2) :: es
+  | '\x76', e2 :: e1 :: es -> F32_sub (e1, e2) :: es
+  | '\x77', e2 :: e1 :: es -> F32_mul (e1, e2) :: es
+  | '\x78', e2 :: e1 :: es -> F32_div (e1, e2) :: es
+  | '\x79', e2 :: e1 :: es -> F32_min (e1, e2) :: es
+  | '\x7a', e2 :: e1 :: es -> F32_max (e1, e2) :: es
+  | '\x7b', e :: es -> F32_abs e :: es
+  | '\x7c', e :: es -> F32_neg e :: es
+  | '\x7d', e2 :: e1 :: es -> F32_copysign (e1, e2) :: es
+  | '\x7e', e :: es -> F32_ceil e :: es
+  | '\x7f', e :: es -> F32_floor e :: es
+  | '\x80', e :: es -> F32_trunc e :: es
+  | '\x81', e :: es -> F32_nearest e :: es
+  | '\x82', e :: es -> F32_sqrt e :: es
+  | '\x83', e2 :: e1 :: es -> F32_eq (e1, e2) :: es
+  | '\x84', e2 :: e1 :: es -> F32_ne (e1, e2) :: es
+  | '\x85', e2 :: e1 :: es -> F32_lt (e1, e2) :: es
+  | '\x86', e2 :: e1 :: es -> F32_le (e1, e2) :: es
+  | '\x87', e2 :: e1 :: es -> F32_gt (e1, e2) :: es
+  | '\x88', e2 :: e1 :: es -> F32_ge (e1, e2) :: es
 
-  | '\x9d' -> let e1, e2 = decode_expr2 s in I32_trunc_s_f32 (e1, e2)
-  | '\x9e' -> let e1, e2 = decode_expr2 s in I32_trunc_s_f64 (e1, e2)
-  | '\x9f' -> let e1, e2 = decode_expr2 s in I32_trunc_u_f32 (e1, e2)
-  | '\xa0' -> let e1, e2 = decode_expr2 s in I32_trunc_u_f64 (e1, e2)
-  | '\xa1' -> let e1, e2 = decode_expr2 s in I32_wrap_i64 (e1, e2)
-  | '\xa2' -> let e1, e2 = decode_expr2 s in I32_trunc_s_f32 (e1, e2)
-  | '\xa3' -> let e1, e2 = decode_expr2 s in I32_trunc_s_f64 (e1, e2)
-  | '\xa4' -> let e1, e2 = decode_expr2 s in I32_trunc_u_f32 (e1, e2)
-  | '\xa5' -> let e1, e2 = decode_expr2 s in I32_trunc_u_f64 (e1, e2)
-  | '\xa6' -> let e1, e2 = decode_expr2 s in I64_extend_s_i32 (e1, e2)
-  | '\xa7' -> let e1, e2 = decode_expr2 s in I64_extend_u_i32 (e1, e2)
-  | '\xa8' -> let e1, e2 = decode_expr2 s in F32_convert_s_i32 (e1, e2)
-  | '\xa9' -> let e1, e2 = decode_expr2 s in F32_convert_u_i32 (e1, e2)
-  | '\xaa' -> let e1, e2 = decode_expr2 s in F32_convert_s_i64 (e1, e2)
-  | '\xab' -> let e1, e2 = decode_expr2 s in F32_convert_u_i64 (e1, e2)
-  | '\xac' -> let e1, e2 = decode_expr2 s in F32_demote_f64 (e1, e2)
-  | '\xad' -> let e1, e2 = decode_expr2 s in F32_reinterpret_i32 (e1, e2)
-  | '\xae' -> let e1, e2 = decode_expr2 s in F64_convert_s_i32 (e1, e2)
-  | '\xaf' -> let e1, e2 = decode_expr2 s in F64_convert_u_i32 (e1, e2)
-  | '\xb0' -> let e1, e2 = decode_expr2 s in F64_convert_s_i64 (e1, e2)
-  | '\xb1' -> let e1, e2 = decode_expr2 s in F64_convert_u_i64 (e1, e2)
-  | '\xb2' -> let e1, e2 = decode_expr2 s in F64_promote_f32 (e1, e2)
-  | '\xb3' -> let e1, e2 = decode_expr2 s in F64_reinterpret_i64 (e1, e2)
-  | '\xb4' -> let e1, e2 = decode_expr2 s in I32_reinterpret_f32 (e1, e2)
-  | '\xb5' -> let e1, e2 = decode_expr2 s in I64_reinterpret_f64 (e1, e2)
+  | '\x89', e2 :: e1 :: es -> F64_add (e1, e2) :: es
+  | '\x8a', e2 :: e1 :: es -> F64_sub (e1, e2) :: es
+  | '\x8b', e2 :: e1 :: es -> F64_mul (e1, e2) :: es
+  | '\x8c', e2 :: e1 :: es -> F64_div (e1, e2) :: es
+  | '\x8d', e2 :: e1 :: es -> F64_min (e1, e2) :: es
+  | '\x8e', e2 :: e1 :: es -> F64_max (e1, e2) :: es
+  | '\x8f', e :: es -> F64_abs e :: es
+  | '\x90', e :: es -> F64_neg e :: es
+  | '\x91', e2 :: e1 :: es -> F64_copysign (e1, e2) :: es
+  | '\x92', e :: es -> F64_ceil e :: es
+  | '\x93', e :: es -> F64_floor e :: es
+  | '\x94', e :: es -> F64_trunc e :: es
+  | '\x95', e :: es -> F64_nearest e :: es
+  | '\x96', e :: es -> F64_sqrt e :: es
+  | '\x97', e2 :: e1 :: es -> F64_eq (e1, e2) :: es
+  | '\x98', e2 :: e1 :: es -> F64_ne (e1, e2) :: es
+  | '\x99', e2 :: e1 :: es -> F64_lt (e1, e2) :: es
+  | '\x9a', e2 :: e1 :: es -> F64_le (e1, e2) :: es
+  | '\x9b', e2 :: e1 :: es -> F64_gt (e1, e2) :: es
+  | '\x9c', e2 :: e1 :: es -> F64_ge (e1, e2) :: es
 
-  | _ -> error (pos s - 1) "invalid operator opcode"
+  | '\x9d', e :: es -> I32_trunc_s_f32 e :: es
+  | '\x9e', e :: es -> I32_trunc_s_f64 e :: es
+  | '\x9f', e :: es -> I32_trunc_u_f32 e :: es
+  | '\xa0', e :: es -> I32_trunc_u_f64 e :: es
+  | '\xa1', e :: es -> I32_wrap_i64 e ::es
+  | '\xa2', e :: es -> I32_trunc_s_f32 e :: es
+  | '\xa3', e :: es -> I32_trunc_s_f64 e :: es
+  | '\xa4', e :: es -> I32_trunc_u_f32 e :: es
+  | '\xa5', e :: es -> I32_trunc_u_f64 e :: es
+  | '\xa6', e :: es -> I64_extend_s_i32 e :: es
+  | '\xa7', e :: es -> I64_extend_u_i32 e :: es
+  | '\xa8', e :: es -> F32_convert_s_i32 e :: es
+  | '\xa9', e :: es -> F32_convert_u_i32 e :: es
+  | '\xaa', e :: es -> F32_convert_s_i64 e :: es
+  | '\xab', e :: es -> F32_convert_u_i64 e :: es
+  | '\xac', e :: es -> F32_demote_f64 e :: es
+  | '\xad', e :: es -> F32_reinterpret_i32 e :: es
+  | '\xae', e :: es -> F64_convert_s_i32 e :: es
+  | '\xaf', e :: es -> F64_convert_u_i32 e :: es
+  | '\xb0', e :: es -> F64_convert_s_i64 e :: es
+  | '\xb1', e :: es -> F64_convert_u_i64 e :: es
+  | '\xb2', e :: es -> F64_promote_f32 e :: es
+  | '\xb3', e :: es -> F64_reinterpret_i64 e :: es
+  | '\xb4', e :: es -> I32_reinterpret_f32 e :: es
+  | '\xb5', e :: es -> I64_reinterpret_f64 e :: es
 
-and decode_expr2 s =
-  let e1 = decode_expr s in
-  let e2 = decode_expr s in
-  e1, e2
+  | '\xb6'..'\xff', _ -> illegal s
 
-and decode_expr_opt s in
-  match peek s with
-  | '\x00' -> adv s; None
-  | _ -> Some (decode_expr s)
+  | _ -> error (pos s) "unexpected end of function"
 
 and decode_target s in
   let x = u16 s in
@@ -366,7 +387,7 @@ let decode_memory s =
   if decode_section_header s <> `MemorySection then None else
   let initial = decode_power_of_2 s in
   let max = decode_power_of_2 s in
-  let exported = bool8 s in (*TODO: not specced*)
+  let exported = bool8 s in (*TODO: spec has name*)
   Some (initial, max)
 
 
