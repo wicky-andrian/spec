@@ -4,20 +4,22 @@ exception Decoding of int * string
 let error pos msg = raise (Decoding (i, msg))
 let require b pos msg = if not b then error pos msg
 
+let string_of_opcode b = Printf.sprintf "%02x" (Char.chr b)
+
 
 (* Decoding stream *)
 
 type stream =
 {
   bytes : bytes;
-  mutable pos : int;
+  pos : int ref;
   limit : int;
 }
 
-let stream b = {bytes = b; pos = 0; len = Bytes.length b}
+let stream b = {bytes = b; pos = ref 0; len = Bytes.length b}
 let substream s len = {s with len = s.pos + len}
 let len s = s.len
-let pos s = s.pos
+let pos s = !s.pos
 let eos s = (pos s = len s)
 
 let bytes s pos len =
@@ -32,11 +34,11 @@ let string s pos =
       error pos "unterminated string"
   in Bytes.sub_string s.bytes pos (end - pos)
 
-let check s = require not (eos s) (len s) "unexpected end of binary"
-let peek s = check s; Bytes.get s.bytes s.pos
-let adv s = check s; s.pos <- s.pos + 1
-let rew s = s.pos <- s.pos - 1
-let get s = check s; let i = s.pos in s.pos <- i + 1; Bytes.get s.bytes i
+let check s = require not (eos s) (len s) "unexpected end of binary or function"
+let peek s = check s; Bytes.get s.bytes !s.pos
+let adv s = check s; s.pos := !s.pos + 1
+let rew s = s.pos := s.pos - 1
+let get s = check s; let i = !s.pos in s.pos := i + 1; Bytes.get s.bytes i
 
 let repeat n f s = if n = 0 then [] else let x = f s in x :: repeat (n - 1) f s
 
@@ -59,7 +61,7 @@ let decode_section_header s =
 
 let expect b s msg = require (get s = b) (pos s - 1) msg
 let illegal s =
-  rew s; error (pos s) ("Illegal opcode " ^ string_of_int (Char.chr (peek s)))
+  rew s; error (pos s) ("Illegal opcode " ^ string_of_opcode (peek s))
 
 let u8 s = Char.code (get s)
 let bool8 s = u8 s <> 0
@@ -413,11 +415,10 @@ let decode_locals s =
 
 let decode_body s =
   let size = u16 s in (*TODO: leb128?*)
-  let pos1 = pos s in
-  let expr = decode_expr s in (*TODO: no list?*)
-  let pos2 = pos s in
-  if pos1 + size <> pos2 then error (pos1 - 2) "incorrect body size";
-  [expr]
+  let s' = substream s size in
+  let es = decode_expr_block s' in
+  require (eos s') (pos s') ("unexpected opcode " ^ string_of_opcode (peek s));
+  es
 
 let decode_name s =
   let pos = u32 s in
