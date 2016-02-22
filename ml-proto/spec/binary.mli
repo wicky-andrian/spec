@@ -1,7 +1,7 @@
-exception Decoding of int * string
+exception Decoding of Source.region * string
 
-val binary_to_module : bytes -> Ast.module_ (* raise Decoding *)
+val decode : string -> bytes -> Ast.module_ (* raise Decoding *)
 
 (*
-val binary_of_module : Ast.module_ -> bytes
+val encode : Ast.module_ -> bytes
 *)

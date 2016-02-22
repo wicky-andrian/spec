@@ -51,13 +51,13 @@ and expr' at = function
   | Ast.Nop -> Nop
   | Ast.Unreachable -> Unreachable
   | Ast.Block es -> Block (List.map expr es)
-  | Ast.Loop es -> Block [Loop (seq es) @@ at]
+  | Ast.Loop es -> Block [Loop (block es) @@ at]
   | Ast.Br (x, eo) -> Break (x, Lib.Option.map expr eo)
   | Ast.Br_if (e, x, eo) ->
     If (expr e, Break (x, Lib.Option.map expr eo) @@ at, opt eo)
   | Ast.Return (x, eo) -> Break (x, Lib.Option.map expr eo)
-  | Ast.If (e1, e2) -> If (expr e1, expr e2, Nop @@ Source.after e2.at)
-  | Ast.If_else (e1, e2, e3) -> If (expr e1, expr e2, expr e3)
+  | Ast.If (e, es) -> If (expr e, block es, Nop @@ Source.after e2.at)
+  | Ast.If_else (e, es1, es2) -> If (expr e, block es1, block es2)
   | Ast.Call (x, es) -> Call (x, List.map expr es)
   | Ast.Call_import (x, es) -> CallImport (x, List.map expr es)
   | Ast.Call_indirect (x, e, es) -> CallIndirect (x, expr e, List.map expr es)
@@ -286,11 +286,9 @@ and expr' at = function
   | Ast.Grow_memory e -> Host (GrowMemory, [expr e])
   | Ast.Has_feature s -> Host (HasFeature s, [])
 
-and seq = function
+and block = function
   | [] -> Nop @@ Source.no_region
-  | [e] -> expr e
-  | es ->
-    Block (List.map label (List.map expr es)) @@@ List.map Source.at es
+  | es -> Block (List.map label (List.map expr es)) @@@ List.map Source.at es
 
 and opt = function
   | None -> Nop @@ Source.no_region
@@ -301,10 +299,8 @@ and opt = function
 
 let rec func f = func' f.it @@ f.at
 and func' = function
-  | {Ast.body = []; ftype; locals} ->
-    {body = Nop @@ no_region; ftype; locals}
   | {Ast.body = es; ftype; locals} ->
-    {body = Block [seq es] @@@ List.map at es; ftype; locals}
+    {body = block es @@@ List.map at es; ftype; locals}
 
 let rec module_ m = module' m.it @@ m.at
 and module' = function
