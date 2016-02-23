@@ -3,6 +3,8 @@
 module Decoding = Error.Make ()
 exception Decoding = Decoding.Error
 
+let string_of_opcode b = Printf.sprintf "%02x" (Char.chr b)
+
 
 (* Decoding stream *)
 
