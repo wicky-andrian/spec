@@ -93,7 +93,7 @@ let type_cvtop at = function
  *)
 let type_hostop = function
   | MemorySize -> ({ins = []; out = Some Int32Type}, true)
-  | GrowMemory -> ({ins = [Int32Type]; out = None}, true)
+  | GrowMemory -> ({ins = [Int32Type]; out = Some Int32Type}, true)
   | HasFeature str -> ({ins = []; out = Some Int32Type}, false)
 
 
@@ -132,6 +132,11 @@ let rec check_expr c et e =
 
   | Break (x, eo) ->
     check_expr_opt c (label c x) eo e.at
+
+  | Br_if (x, eo, e) ->
+    check_expr_opt c (label c x) eo e.at;
+    check_expr c (Some Int32Type) e;
+    check_type None et e.at
 
   | If (e1, e2, e3) ->
     check_expr c (Some Int32Type) e1;
@@ -198,9 +203,9 @@ let rec check_expr c et e =
 
   | Select (selop, e1, e2, e3) ->
     let t = type_selop selop in
-    check_expr c (Some Int32Type) e1;
+    check_expr c (Some t) e1;
     check_expr c (Some t) e2;
-    check_expr c (Some t) e3
+    check_expr c (Some Int32Type) e3
 
   | Compare (relop, e1, e2) ->
     let t = type_relop relop in
@@ -252,9 +257,7 @@ and check_has_memory c at =
 and check_memop memop at =
   require (memop.offset >= 0L) at "negative offset";
   require (memop.offset <= 0xffffffffL) at "offset too large";
-  Lib.Option.app
-    (fun a -> require (Lib.Int.is_power_of_two a) at "non-power-of-two alignment")
-    memop.align
+  require (Lib.Int.is_power_of_two memop.align) at "non-power-of-two alignment";
 
 and check_mem_type ty sz at =
   require (ty = Int64Type || sz <> Memory.Mem32) at "memory size too big"
@@ -292,6 +295,15 @@ let check_export c set ex =
     "duplicate export name";
   NameSet.add name set
 
+let check_start c start =
+  Lib.Option.app (fun x ->
+    let start_type = func c x in
+    require (start_type.ins = []) x.at
+      "start function must be nullary";
+    require (start_type.out = None) x.at
+      "start function must not return anything";
+  ) start
+
 let check_segment size prev_end seg =
   let seg_len = Int64.of_int (String.length seg.it.Memory.data) in
   let seg_end = Int64.add seg.it.Memory.addr seg_len in
@@ -310,7 +322,7 @@ let check_memory memory =
   ignore (List.fold_left (check_segment mem.initial) Int64.zero mem.segments)
 
 let check_module m =
-  let {memory; types; funcs; imports; exports; table} = m.it in
+  let {memory; types; funcs; start; imports; exports; table} = m.it in
   Lib.Option.app check_memory memory;
   let c = {types;
            funcs = List.map (fun f -> type_ types f.it.ftype) funcs;
@@ -321,4 +333,5 @@ let check_module m =
            has_memory = memory <> None} in
   List.iter (check_func c) funcs;
   List.iter (check_elem c) table;
-  ignore (List.fold_left (check_export c) NameSet.empty exports)
+  ignore (List.fold_left (check_export c) NameSet.empty exports);
+  check_start c start

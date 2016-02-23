@@ -135,7 +135,7 @@ let implicit_decl c t at =
 %token CALL CALL_IMPORT CALL_INDIRECT RETURN
 %token GET_LOCAL SET_LOCAL LOAD STORE OFFSET ALIGN
 %token CONST UNARY BINARY COMPARE CONVERT
-%token FUNC TYPE PARAM RESULT LOCAL
+%token FUNC START TYPE PARAM RESULT LOCAL
 %token MODULE MEMORY SEGMENT IMPORT EXPORT TABLE
 %token UNREACHABLE MEMORY_SIZE GROW_MEMORY HAS_FEATURE
 %token ASSERT_INVALID ASSERT_RETURN ASSERT_RETURN_NAN ASSERT_TRAP INVOKE
@@ -234,7 +234,8 @@ expr1 :
   | LOOP labeling1 labeling1 expr_list
     { fun c -> let c' = $2 c in let c'' = $3 c' in Loop ($4 c'') }
   | BR var expr_opt { fun c -> Br ($2 c label, $3 c) }
-  | BR_IF expr var expr_opt { fun c -> Br_if ($2 c, $3 c label, $4 c) }
+  | BR_IF var expr { fun c -> Br_if ($2 c label, None, $3 c) }
+  | BR_IF var expr expr { fun c -> Br_if ($2 c label, Some ($3 c), $4 c) }
   | RETURN expr_opt
     { let at1 = ati 1 in
       fun c -> Return (label c ("return" @@ at1) @@ at1, $2 c) }
@@ -339,6 +340,10 @@ func :
 
 /* Modules */
 
+start :
+  | LPAR START var RPAR
+    { fun c -> $3 c func }
+
 segment :
   | LPAR SEGMENT INT TEXT RPAR
     { {Memory.addr = Int64.of_string $3; Memory.data = $4} @@ at () }
@@ -396,7 +401,7 @@ export :
 module_fields :
   | /* empty */
     { fun c ->
-      {memory = None; types = c.types.tlist; funcs = []; imports = [];
+      {memory = None; types = c.types.tlist; funcs = []; start = None; imports = [];
        exports = []; table = []} }
   | func module_fields
     { fun c -> let f = $1 c in let m = $2 c in
@@ -417,6 +422,9 @@ module_fields :
       match m.memory with
       | Some _ -> error $1.at "multiple memory sections"
       | None -> {m with memory = Some $1} }
+  | start module_fields
+    { fun c -> let m = $2 c in
+      {m with start = Some ($1 c)} }
 ;
 module_ :
   | LPAR MODULE module_fields RPAR { $3 (empty_context ()) @@ at () }
