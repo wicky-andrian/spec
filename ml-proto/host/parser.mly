@@ -236,11 +236,9 @@ expr1 :
   | BR var expr_opt { fun c -> Br ($2 c label, $3 c) }
   | BR_IF var expr { fun c -> Br_if ($2 c label, None, $3 c) }
   | BR_IF var expr expr { fun c -> Br_if ($2 c label, Some ($3 c), $4 c) }
-  | RETURN expr_opt
-    { let at1 = ati 1 in
-      fun c -> Return (label c ("return" @@ at1) @@ at1, $2 c) }
-  | IF expr expr { fun c -> If ($2 c, $3 c) }
-  | IF_ELSE expr expr expr { fun c -> If_else ($2 c, $3 c, $4 c) }
+  | RETURN expr_opt { fun c -> Return ($2 c) }
+  | IF expr expr { fun c -> If ($2 c, [$3 c]) }
+  | IF_ELSE expr expr expr { fun c -> If_else ($2 c, [$3 c], [$4 c]) }
   | TABLESWITCH labeling expr LPAR TABLE target_list RPAR target case_list
     { fun c -> let c' = $2 c in let e = $3 c' in
       let c'' = enter_switch c' in let es = $9 c'' in

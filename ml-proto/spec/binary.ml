@@ -3,7 +3,7 @@
 module Decoding = Error.Make ()
 exception Decoding = Decoding.Error
 
-let string_of_opcode b = Printf.sprintf "%02x" (Char.chr b)
+let string_of_opcode b = Printf.sprintf "%02x" (Char.code b)
 
 
 (* Decoding stream *)
@@ -84,7 +84,15 @@ let u16 s =
 let u32 s =
   let lo = Int32.of_int (u16 s) in
   let hi = Int32.of_int (u16 s) in
-  Int32.(add lo (mul 65536l hi))
+  Int32.(add lo (mul 0x1_0000l hi))
+
+let u64 s =
+  let lo = Int64.of_int32 (u32 s) in
+  let hi = Int64.of_int32 (u32 s) in
+  Int64.(add lo (mul 0x1_0000_0000L hi))
+
+let f32 s = F32_convert.reinterpret_i32 (u32 s)
+let f64 s = F64_convert.reinterpret_i64 (u64 s)
 
 let rec leb128 s =
   let b = u8 s in
@@ -116,7 +124,7 @@ let decode_name s =
   string s off
 
 let decode_var s =
-  u16 s
+  Int32.to_int (leb128 s)
 
 let decode_vec decode_fn s =
   let len = leb128 s in
@@ -203,10 +211,10 @@ and decode_op s stack =
     (*TODO: make Select parametric *)
     Nop (*Select (e1, e2, e3)*), es
   | '\x06', e :: es ->
-    let x = at decode_var s in
+    let x = at u8 s in (*TODO: var*)
     Br (x, opt e), es
   | '\x07', e2 :: e1 :: es ->
-    let x = at decode_var s in
+    let x = at u8 s in (*TODO: var*)
     Br_if (x, opt e1, e2), es
   | '\x08', e :: es ->
 illegal s (pos s - 1) '\x08' (*TODO
@@ -219,11 +227,13 @@ illegal s (pos s - 1) '\x08' (*TODO
     Tableswitch (e, ts, t, List.map (fun e -> [e]) es) (*TODO: fix AST*)
 *)
 
-  | '\x09', es -> I32_const (Int32.of_int (u8 s) & 0xffl), es (*TODO: opcode?*)
-  | '\x0a', es -> I32_const (u32 s), es
-  | '\x0b', es -> I64_const (u64 s), es
-  | '\x0c', es -> F32_const (f32 s), es
-  | '\x0d', es -> F64_const (f64 s), es
+  | '\x09', es ->
+    let i32 = at (fun s -> Int32.(logand (of_int (u8 s)) 0xffl)) s in
+    I32_const i32, es (*TODO: opcode?*)
+  | '\x0a', es -> I32_const (at u32 s), es
+  | '\x0b', es -> I64_const (at u64 s), es
+  | '\x0c', es -> F32_const (at f32 s), es
+  | '\x0d', es -> F64_const (at f64 s), es
 
   | '\x0e', es ->
     let x = at decode_var s in
@@ -235,19 +245,18 @@ illegal s (pos s - 1) '\x08' (*TODO
     illegal s (pos s - 1) b (* get/set_global *)
 
   | '\x12', es ->
-    let x = leb128 s in (*TODO: var*)
+    let x = at decode_var s in
     let arity = 1 (*TODO: from func table*) in
-    Call (x, Lib.List. take arity es), Lib.List.drop arity es
+    Call (x, Lib.List.take arity es), Lib.List.drop arity es
   | '\x13', e :: es ->
-    let x = leb128 s in (*TODO: var*)
+    let x = at decode_var s in
     let arity = 1 (*TODO: from type table*) in
     Call_indirect (x, e, Lib.List. take arity es), Lib.List.drop arity es
   (*TODO: Call_import?*)
 
-  | '\x14', es ->
+  | '\x14', e :: es ->
     let arity = 1 (*TODO: from func table*) in
-    let eo = if arity = 0 then None else Some (pop s 1) in
-    Return eo, s.stack
+    if arity = 0 then Return None, e :: es else Return (Some e), es
   | '\x15', es ->
     Unreachable, es
 
@@ -255,30 +264,30 @@ illegal s (pos s - 1) '\x08' (*TODO
   | '\x17', _ -> assert false (* end *)
   | '\x18'..'\x1f' as b, _ -> illegal s (pos s - 1) b
 
-  | '\x20', e :: es -> I32_load8_s (0, None, e), es
-  | '\x21', e :: es -> I32_load8_u (0, None, e), es
-  | '\x22', e :: es -> I32_load16_s (0, None, e), es
-  | '\x23', e :: es -> I32_load16_u (0, None, e), es
-  | '\x24', e :: es -> I64_load8_s (0, None, e), es
-  | '\x25', e :: es -> I64_load8_u (0, None, e), es
-  | '\x26', e :: es -> I64_load16_s (0, None, e), es
-  | '\x27', e :: es -> I64_load16_u (0, None, e), es
-  | '\x28', e :: es -> I64_load32_s (0, None, e), es
-  | '\x29', e :: es -> I64_load32_u (0, None, e), es
-  | '\x2a', e :: es -> I32_load (0, None, e), es
-  | '\x2b', e :: es -> I64_load (0, None, e), es
-  | '\x2c', e :: es -> F32_load (0, None, e), es
-  | '\x2d', e :: es -> F64_load (0, None, e), es
+  | '\x20', e :: es -> I32_load8_s (0L, 0, e), es
+  | '\x21', e :: es -> I32_load8_u (0L, 0, e), es
+  | '\x22', e :: es -> I32_load16_s (0L, 0, e), es
+  | '\x23', e :: es -> I32_load16_u (0L, 0, e), es
+  | '\x24', e :: es -> I64_load8_s (0L, 0, e), es
+  | '\x25', e :: es -> I64_load8_u (0L, 0, e), es
+  | '\x26', e :: es -> I64_load16_s (0L, 0, e), es
+  | '\x27', e :: es -> I64_load16_u (0L, 0, e), es
+  | '\x28', e :: es -> I64_load32_s (0L, 0, e), es
+  | '\x29', e :: es -> I64_load32_u (0L, 0, e), es
+  | '\x2a', e :: es -> I32_load (0L, 0, e), es
+  | '\x2b', e :: es -> I64_load (0L, 0, e), es
+  | '\x2c', e :: es -> F32_load (0L, 0, e), es
+  | '\x2d', e :: es -> F64_load (0L, 0, e), es
 
-  | '\x2e', e2 :: e1 :: es -> I32_store8 (0, None, e1, e2), es
-  | '\x2f', e2 :: e1 :: es -> I32_store16 (0, None, e1, e2), es
-  | '\x30', e2 :: e1 :: es -> I64_store8 (0, None, e1, e2), es
-  | '\x31', e2 :: e1 :: es -> I64_store16 (0, None, e1, e2), es
-  | '\x32', e2 :: e1 :: es -> I64_store32 (0, None, e1, e2), es
-  | '\x33', e2 :: e1 :: es -> I32_store (0, None, e1, e2), es
-  | '\x34', e2 :: e1 :: es -> I64_store (0, None, e1, e2), es
-  | '\x35', e2 :: e1 :: es -> F32_store (0, None, e1, e2), es
-  | '\x36', e2 :: e1 :: es -> F64_store (0, None, e1, e2), es
+  | '\x2e', e2 :: e1 :: es -> I32_store8 (0L, 0, e1, e2), es
+  | '\x2f', e2 :: e1 :: es -> I32_store16 (0L, 0, e1, e2), es
+  | '\x30', e2 :: e1 :: es -> I64_store8 (0L, 0, e1, e2), es
+  | '\x31', e2 :: e1 :: es -> I64_store16 (0L, 0, e1, e2), es
+  | '\x32', e2 :: e1 :: es -> I64_store32 (0L, 0, e1, e2), es
+  | '\x33', e2 :: e1 :: es -> I32_store (0L, 0, e1, e2), es
+  | '\x34', e2 :: e1 :: es -> I64_store (0L, 0, e1, e2), es
+  | '\x35', e2 :: e1 :: es -> F32_store (0L, 0, e1, e2), es
+  | '\x36', e2 :: e1 :: es -> F64_store (0L, 0, e1, e2), es
 
   | '\x37'..'\x38' as b, _ -> illegal s (pos s - 1) b
   | '\x39', e :: es -> Grow_memory e, es
@@ -311,7 +320,7 @@ illegal s (pos s - 1) '\x08' (*TODO
   | '\x57', e :: es -> I32_clz e, es
   | '\x58', e :: es -> I32_ctz e, es
   | '\x59', e :: es -> I32_popcnt e, es
-  | '\x5a', e :: es -> I32_not e, es (*TODO*)
+  | '\x5a', e :: es -> Nop (*I32_not e*), es (*TODO*)
 
   | '\x5b', e2 :: e1 :: es -> I64_add (e1, e2), es
   | '\x5c', e2 :: e1 :: es -> I64_sub (e1, e2), es
@@ -413,11 +422,12 @@ illegal s (pos s - 1) '\x08' (*TODO
   | _ -> error s (len s) "unexpected end of function"
 
 and decode_target s =
-  let x = u16 s in
-  if x & 0x8000 = 0 then
+  let open Ast in
+  let x = at u16 s in
+  if x.Source.it land 0x8000 = 0 then
     Case x
   else
-    Case_br (x & 0x7fff)
+    Case_br Source.(x.it land 0x7fff @@ x.at)
 
 
 (* Decode memory section *)
@@ -425,7 +435,7 @@ and decode_target s =
 let decode_power_of_2 s =
   let n = u8 s in
   require (n < 64) s (pos s - 1) "shift value out of range";
-  Int64.(shift_left 1L (of_int n))
+  Int64.(shift_left 1L n)
 
 let decode_memory_section s =
   if decode_section_header s <> `MemorySection then None else
@@ -439,7 +449,7 @@ let decode_memory_section s =
 
 let decode_type_section s =
   if decode_section_header s <> `TypesSection then [] else
-  let types = decode_vec (at decode_func_type) s in
+  let types = decode_vec decode_func_type s in
   types
 
 
@@ -449,7 +459,7 @@ let decode_import s =
   let itype  = at decode_var s in
   let module_name = decode_name s in
   let func_name = decode_name s in
-  {itype; module_name; func_name}
+  Kernel.({itype; module_name; func_name})
 
 let decode_import_section s =
   if decode_section_header s <> `ImportSection then [] else
@@ -465,8 +475,9 @@ let decode_locals s =
   let i64_len = u16 s in
   let f32_len = u16 s in
   let f64_len = u16 s in
-  make i32_len Int32Type @ make i64_len Int64Type @
-  make f32_len Float32Type @ make f64_len Float64Type
+  let open Types in
+  Lib.List.make i32_len Int32Type @ Lib.List.make i64_len Int64Type @
+  Lib.List.make f32_len Float32Type @ Lib.List.make f64_len Float64Type
 
 let decode_body s =
   let size = u16 s in (*TODO: leb128?*)
@@ -480,11 +491,11 @@ let decode_func s =
   let ftype = at decode_var s in
   let has_name = bit 0 flags in
   let has_locals = bit 2 flags in
-  let exported = bit 3 flags in
-  let name = if has_name then Some (decode_name s) else None in (*TODO*)
+  let _exported = bit 3 flags in
+  let _name = if has_name then Some (decode_name s) else None in (*TODO*)
   let locals = if has_locals then decode_locals s else [] in
-  let body = at decode_body s in
-  {ftype; locals; body}
+  let body = decode_body s in
+  Ast.({ftype; locals; body})
 
 let decode_func_section s =
   if decode_section_header s <> `FuncSection then [] else
@@ -496,8 +507,8 @@ let decode_func_section s =
 
 let decode_import s =
   let func = at decode_var s in
-  let name = at decode_name s in
-  {func; name}
+  let name = decode_name s in
+  Kernel.({func; name})
 
 let decode_export_section s =
   if decode_section_header s <> `ExportSection then [] else
@@ -508,12 +519,12 @@ let decode_export_section s =
 (* Decode data section *)
 
 let decode_segment s =
-  let addr = Int64.of_int32 (u32 s) logand 0xffffffffL in
+  let addr = Int64.(logand (of_int32 (u32 s)) 0xffffffffL) in
   let offset = u32 s in
   let size = u32 s in
-  let init = bool8 s in (*TODO: unused*)
+  let _init = bool8 s in (*TODO: unused*)
   let data = bytes s offset size in
-  {addr; data}
+  Memory.({addr; data})
 
 let decode_data_section s =
   if decode_section_header s <> `DataSection then [] else
@@ -548,7 +559,8 @@ let decode_module s =
     match mem with
     | None when segments = [] -> None
     | None -> error s 0 "segment section without data section"
-    | Some (initial, max, exported) -> Some {initial; max; segments} (*TODO: export name*)
-  in {memory; types; funcs; imports; exports; table}
+    | Some (initial, max, exported) ->
+      Some Source.(Kernel.({initial; max; segments}) @@ Source.no_region) (*TODO: export name*)
+  in Ast.({memory; types; funcs; imports; exports; table; start = None}) (*TODO: start*)
 
 let decode name b = at decode_module (stream name b)
