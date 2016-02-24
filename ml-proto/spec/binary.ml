@@ -42,7 +42,7 @@ let bytes s off len =
 let string s off =
   (*TODO: leb128?*)
   require (Int32.of_int (Bytes.length s.bytes) > off)
-    s (pos s) "string out of bounds";
+    s (pos s) ("string position " ^ Int32.to_string off ^ " out of bounds");
   let bos = Int32.to_int off in
   let eos =
     try Bytes.index_from s.bytes bos '\x00' with Not_found ->
@@ -103,18 +103,23 @@ let rec leb128 s =
 
 (* Decode section header *)
 
-let decode_section_header s =
-  match get s with (*TODO: reorder?*)
-  | '\x00' -> `MemorySection
-  | '\x01' -> `TypeSection
-  | '\x02' -> `FuncSection
-  | '\x03' -> error s (pos s - 1) "illegal globals section"
-  | '\x04' -> `DataSection
-  | '\x05' -> `TableSection
-  | '\x06' -> `EndSection
-  | '\x08' -> `ImportSection
-  | '\x09' -> `ExportSection
-  | b -> error s (pos s - 1) ("invalid section code" ^ string_of_byte b)
+let decode_section_header s expect_header =
+  let found_header =
+    match peek s with (*TODO: reorder?*)
+    | '\x00' -> `MemorySection
+    | '\x01' -> `TypeSection
+    | '\x02' -> `FuncSection
+    | '\x03' -> error s (pos s - 1) "illegal globals section"
+    | '\x04' -> `DataSection
+    | '\x05' -> `TableSection
+    | '\x06' -> `EndSection
+    | '\x08' -> `ImportSection
+    | '\x09' -> `ExportSection
+    | b -> error s (pos s - 1) ("invalid section code " ^ string_of_byte b)
+  in
+  let found = (found_header = expect_header) in
+  if found then ignore (get s);
+  found
 
 
 (* Leafs and vectors *)
@@ -438,33 +443,61 @@ let decode_power_of_2 s =
   Int64.(shift_left 1L n)
 
 let decode_memory_section s =
-  if decode_section_header s <> `MemorySection then None else
-  let initial = decode_power_of_2 s in (*TODO: leb128 of page sizes*)
-  let max = decode_power_of_2 s in
-  let exported = bool8 s in (*TODO: spec has name*)
-  Some (initial, max, exported)
+  if not (decode_section_header s `MemorySection) then None else begin
+print_endline "MEMORY SECTION";
+    let initial = decode_power_of_2 s in (*TODO: leb128 of page sizes*)
+    let max = decode_power_of_2 s in
+    let exported = bool8 s in (*TODO: spec has name*)
+print_int (pos s); print_endline "";
+    Some (initial, max, exported)
+  end
+
+
+(* Decode data section *)
+
+let decode_segment s =
+  let addr = Int64.(logand (of_int32 (u32 s)) 0xffffffffL) in
+  let offset = u32 s in
+  let size = u32 s in
+  let _init = bool8 s in (*TODO: unused*)
+  let data = bytes s offset size in
+  Memory.({addr; data})
+
+let decode_data_section s =
+  if not (decode_section_header s `DataSection) then [] else begin
+print_endline "DATA SECTION";
+    let segments = decode_vec (at decode_segment) s in
+    segments
+  end
 
 
 (* Decode type section *)
 
 let decode_type_section s =
-  if decode_section_header s <> `TypesSection then [] else
-  let types = decode_vec decode_func_type s in
-  types
+  if not (decode_section_header s `TypeSection) then [] else begin
+print_endline "TYPE SECTION";
+    let types = decode_vec decode_func_type s in
+    types
+  end
 
 
 (* Decode import section *)
 
 let decode_import s =
-  let itype  = at decode_var s in
+  let itype  = at u16 s in (*TODO: var *)
+print_endline "IMPORT module";
   let module_name = decode_name s in
+print_endline "IMPORT func";
   let func_name = decode_name s in
+print_endline "IMPORT done";
   Kernel.({itype; module_name; func_name})
 
 let decode_import_section s =
-  if decode_section_header s <> `ImportSection then [] else
-  let imports = decode_vec (at decode_import) s in
-  imports
+  if not (decode_section_header s `ImportSection) then [] else begin
+print_endline "IMPORT SECTION";
+    let imports = decode_vec (at decode_import) s in
+    imports
+  end
 
 
 (* Decode function section *)
@@ -498,9 +531,10 @@ let decode_func s =
   Ast.({ftype; locals; body})
 
 let decode_func_section s =
-  if decode_section_header s <> `FuncSection then [] else
-  let funcs = decode_vec (at decode_func) s in
-  funcs
+  if not (decode_section_header s `FuncSection) then [] else begin
+    let funcs = decode_vec (at decode_func) s in
+    funcs
+  end
 
 
 (* Decode export section *)
@@ -511,50 +545,49 @@ let decode_import s =
   Kernel.({func; name})
 
 let decode_export_section s =
-  if decode_section_header s <> `ExportSection then [] else
-  let exports = decode_vec (at decode_import) s in
-  exports
-
-
-(* Decode data section *)
-
-let decode_segment s =
-  let addr = Int64.(logand (of_int32 (u32 s)) 0xffffffffL) in
-  let offset = u32 s in
-  let size = u32 s in
-  let _init = bool8 s in (*TODO: unused*)
-  let data = bytes s offset size in
-  Memory.({addr; data})
-
-let decode_data_section s =
-  if decode_section_header s <> `DataSection then [] else
-  let segments = decode_vec (at decode_segment) s in
-  segments
+  if not (decode_section_header s `ExportSection) then [] else begin
+    let exports = decode_vec (at decode_import) s in
+    exports
+  end
 
 
 (* Decode table section *)
 
 let decode_table_section s =
-  if decode_section_header s <> `TableSection then [] else
-  let table = decode_vec (at decode_var) s in
-  table
+  if not (decode_section_header s `TableSection) then [] else begin
+    let table = decode_vec (at decode_var) s in
+    table
+  end
 
 
 (* Decode module *)
 
 let decode_end s =
-  if decode_section_header s <> `EndSection then
-    error s (pos s - 1) "misplaced or duplicate section"
+  if not (decode_section_header s `EndSection) then
+    error s (pos s)
+      ("misplaced or duplicate section " ^ string_of_byte (peek s))
+
+let trace s sec =
+  print_endline (string_of_byte (peek s) ^ " @ " ^ string_of_int (pos s) ^ sec)
 
 let decode_module s =
+trace s " at start";
   let mem = decode_memory_section s in
-  let types = decode_type_section s in
-  let imports = decode_import_section s in
-  let funcs = decode_func_section s in
-  let exports = decode_export_section s in
-  let table = decode_table_section s in
+trace s " after memory";
   let segments = decode_data_section s in (*TODO: merge with memory?*)
+trace s " after data";
+  let types = decode_type_section s in
+trace s " after types";
+  let imports = decode_import_section s in
+trace s " after imports";
+  let funcs = decode_func_section s in
+trace s " after funcs";
+  let exports = decode_export_section s in
+trace s " after exports";
+  let table = decode_table_section s in
+trace s " after table";
   decode_end s;
+trace s " after end";
   let memory =
     match mem with
     | None when segments = [] -> None
